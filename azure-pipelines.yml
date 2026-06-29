@@ -8,7 +8,7 @@ variables:
 stages:
 - stage: 'Build'
   displayName: 'Build the web application'
-  jobs: 
+  jobs:
   - job: 'Build'
     displayName: 'Build job'
     pool:
@@ -25,6 +25,11 @@ stages:
       displayName: 'Use .NET SDK $(dotnetSdkVersion)'
       inputs:
         version: '$(dotnetSdkVersion)'
+
+    - task: UseNode@1
+      displayName: 'Use Node.js 16'
+      inputs:
+        version: '16.x'
 
     - task: Npm@1
       displayName: 'Run npm install'
