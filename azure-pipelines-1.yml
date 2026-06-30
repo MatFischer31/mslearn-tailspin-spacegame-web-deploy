@@ -1,0 +1,12 @@
+trigger: none
+
+pool:
+  name: PRO690
+
+steps:
+- powershell: |
+    Write-Host "Agent Name: $(Agent.Name)"
+    Write-Host "Machine Name: $(Agent.MachineName)"
+    Write-Host "Operating System: $(Agent.OS)"
+    Write-Host "Self-hosted agent test completed successfully."
+  displayName: Verify self-hosted agent
