@@ -8,5 +8,11 @@ steps:
     Write-Host "Agent Name: $(Agent.Name)"
     Write-Host "Machine Name: $(Agent.MachineName)"
     Write-Host "Operating System: $(Agent.OS)"
-    Write-Host "Self-hosted agent test completed successfully."
-  displayName: Verify self-hosted agent
+
+    git --version
+    dotnet --version
+    node --version
+    npm.cmd --version
+
+    Write-Host "All required tools verified successfully."
+  displayName: Verify self-hosted agent tools
