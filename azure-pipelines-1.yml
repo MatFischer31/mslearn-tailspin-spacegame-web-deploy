@@ -1,18 +1,246 @@
 trigger: none
 
-pool:
-  name: PRO690
+variables:
+  buildConfiguration: 'Release'
+  wwwrootDir: 'Tailspin.SpaceGame.Web/wwwroot'
+  dotnetSdkVersion: '8.x'
 
-steps:
-- powershell: |
-    Write-Host "Agent Name: $(Agent.Name)"
-    Write-Host "Machine Name: $(Agent.MachineName)"
-    Write-Host "Operating System: $(Agent.OS)"
+stages:
 
-    git --version
-    dotnet --version
-    node --version
-    npm.cmd --version
+# =========================================================
+# BUILD — SELF-HOSTED WINDOWS AGENT
+# =========================================================
+- stage: Build
+  displayName: 'Build on self-hosted agent'
 
-    Write-Host "All required tools verified successfully."
-  displayName: Verify self-hosted agent tools
+  jobs:
+  - job: BuildJob
+    displayName: 'Build Tailspin application'
+
+    pool:
+      name: PRO690
+
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: UseDotNet@2
+      displayName: 'Use .NET SDK 8'
+      inputs:
+        packageType: 'sdk'
+        version: '$(dotnetSdkVersion)'
+
+    - task: NodeTool@0
+      displayName: 'Use Node.js 16.20.2'
+      inputs:
+        versionSpec: '16.20.2'
+
+    - powershell: |
+        Write-Host "Agent Name: $(Agent.Name)"
+        Write-Host "Machine Name: $(Agent.MachineName)"
+        git --version
+        dotnet --version
+        node --version
+        npm.cmd --version
+      displayName: 'Verify self-hosted tools'
+
+    - task: Npm@1
+      displayName: 'Install npm dependencies'
+      inputs:
+        command: 'install'
+        verbose: false
+
+    - powershell: |
+        $sass = Join-Path "$(Build.SourcesDirectory)" `
+          "node_modules\.bin\node-sass.cmd"
+
+        $wwwroot = Join-Path "$(Build.SourcesDirectory)" `
+          "$(wwwrootDir)"
+
+        if (-not (Test-Path $sass)) {
+          throw "node-sass.cmd was not found."
+        }
+
+        & $sass $wwwroot --output $wwwroot
+
+        if ($LASTEXITCODE -ne 0) {
+          throw "Sass compilation failed."
+        }
+      displayName: 'Compile Sass assets'
+
+    - task: gulp@1
+      displayName: 'Run gulp tasks'
+
+    - powershell: |
+        $buildInfoPath = Join-Path "$(Build.SourcesDirectory)" `
+          "$(wwwrootDir)\buildinfo.txt"
+
+        "$(Build.DefinitionName), $(Build.BuildId), $(Build.BuildNumber)" |
+          Set-Content $buildInfoPath
+      displayName: 'Write build information'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore project dependencies'
+      inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build project'
+      inputs:
+        command: 'build'
+        projects: '**/*.csproj'
+        arguments: '--no-restore --configuration $(buildConfiguration)'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish application'
+      inputs:
+        command: 'publish'
+        projects: '**/*.csproj'
+        publishWebProjects: false
+        arguments: >
+          --no-build
+          --configuration $(buildConfiguration)
+          --output $(Build.ArtifactStagingDirectory)/$(buildConfiguration)
+        zipAfterPublish: true
+
+    - publish: '$(Build.ArtifactStagingDirectory)'
+      artifact: drop
+      displayName: 'Publish build artifact'
+
+
+# =========================================================
+# TEST — SELF-HOSTED WINDOWS AGENT
+# =========================================================
+- stage: Test
+  displayName: 'Test on self-hosted agent'
+  dependsOn: Build
+  condition: succeeded()
+
+  jobs:
+  - job: TestJob
+    displayName: 'Test and validate application'
+
+    pool:
+      name: PRO690
+
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: UseDotNet@2
+      displayName: 'Use .NET SDK 8'
+      inputs:
+        packageType: 'sdk'
+        version: '$(dotnetSdkVersion)'
+
+    - download: current
+      artifact: drop
+      displayName: 'Download build artifact'
+
+    - powershell: |
+        $zipFiles = @(
+          Get-ChildItem "$(Pipeline.Workspace)\drop" `
+            -Recurse `
+            -Filter "*.zip"
+        )
+
+        if ($zipFiles.Count -eq 0) {
+          throw "No deployment ZIP was found."
+        }
+
+        $extractPath = Join-Path `
+          "$(Agent.TempDirectory)" `
+          "tailspin-smoke-test"
+
+        if (Test-Path $extractPath) {
+          Remove-Item $extractPath -Recurse -Force
+        }
+
+        New-Item `
+          -ItemType Directory `
+          -Path $extractPath |
+          Out-Null
+
+        Expand-Archive `
+          -Path $zipFiles[0].FullName `
+          -DestinationPath $extractPath
+
+        $dllFiles = @(
+          Get-ChildItem $extractPath `
+            -Recurse `
+            -Filter "*.dll"
+        )
+
+        if ($dllFiles.Count -eq 0) {
+          throw "The deployment package contains no application DLLs."
+        }
+
+        Write-Host "Artifact smoke test succeeded."
+        Write-Host "Package: $($zipFiles[0].FullName)"
+        Write-Host "DLL files found: $($dllFiles.Count)"
+      displayName: 'Test deployment artifact'
+
+    - powershell: |
+        $testProjects = @(
+          Get-ChildItem "$(Build.SourcesDirectory)" `
+            -Recurse `
+            -Filter "*Tests.csproj"
+        )
+
+        if ($testProjects.Count -eq 0) {
+          Write-Host "No unit-test project was found."
+          Write-Host "Artifact validation serves as the Test-stage check."
+        }
+        else {
+          foreach ($project in $testProjects) {
+            Write-Host "Testing $($project.FullName)"
+
+            dotnet test `
+              $project.FullName `
+              --configuration "$(buildConfiguration)"
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unit tests failed."
+            }
+          }
+        }
+      displayName: 'Run available unit tests'
+
+
+# =========================================================
+# DEPLOY — MICROSOFT-HOSTED AGENT
+# =========================================================
+- stage: Deploy
+  displayName: 'Deploy using Microsoft-hosted agent'
+  dependsOn: Test
+  condition: succeeded()
+
+  jobs:
+  - deployment: DeployStaging
+    displayName: 'Deploy application to staging'
+
+    pool:
+      vmImage: 'ubuntu-22.04'
+
+    environment: staging
+
+    variables:
+    - group: Release
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+            displayName: 'Download tested artifact'
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy staging web application'
+            inputs:
+              azureSubscription: 'SecureApp-Azure'
+              appType: 'webAppLinux'
+              appName: '$(WebAppNameStaging)'
+              package: >
+                $(Pipeline.Workspace)/drop/$(buildConfiguration)/*.zip
