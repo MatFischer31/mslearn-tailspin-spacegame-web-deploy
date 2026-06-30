@@ -51,6 +51,22 @@ stages:
         verbose: false
 
     - powershell: |
+        $gulp = Join-Path "$(Build.SourcesDirectory)" `
+          "node_modules\.bin\gulp.cmd"
+
+        if (-not (Test-Path $gulp)) {
+          throw "Local gulp executable was not found at $gulp"
+        }
+
+        & $gulp
+
+        if ($LASTEXITCODE -ne 0) {
+          throw "Gulp tasks failed."
+        }
+      workingDirectory: '$(Build.SourcesDirectory)'
+      displayName: 'Run gulp tasks'
+
+    - powershell: |
         $sass = Join-Path "$(Build.SourcesDirectory)" `
           "node_modules\.bin\node-sass.cmd"
 
@@ -67,9 +83,6 @@ stages:
           throw "Sass compilation failed."
         }
       displayName: 'Compile Sass assets'
-
-    - task: gulp@1
-      displayName: 'Run gulp tasks'
 
     - powershell: |
         $buildInfoPath = Join-Path "$(Build.SourcesDirectory)" `
